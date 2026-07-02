@@ -206,6 +206,17 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, start_time,
     else:
         raise Exception("Failed to parse video/image information. FFMPEG output:\n" + lines)
 
+    # ffmpeg automatically applies rotation metadata to rawvideo output.
+    # For 90/270 degree rotations (e.g. iPhone portrait videos stored as
+    # landscape with rotation metadata), swap width and height so that
+    # size_base reflects the displayed dimensions and matches the actual
+    # pixel layout produced by ffmpeg.
+    rot_match = re.search("rotation of (-?[\\d\\.]+) degrees", lines)
+    if rot_match is not None:
+        rotation = float(rot_match.group(1))
+        if abs(abs(rotation) - 90) < 1 or abs(abs(rotation) - 270) < 1:
+            size_base[0], size_base[1] = size_base[1], size_base[0]
+
     durs_match = re.search("Duration: (\\d+:\\d+:\\d+\\.\\d+),", lines)
     if durs_match:
         durs = durs_match.group(1).split(':')
