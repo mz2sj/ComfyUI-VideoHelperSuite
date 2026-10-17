@@ -7,8 +7,10 @@ import re
 import asyncio
 import av
 
+from .logger import logger
 from .utils import is_url, get_sorted_dir_files_from_directory, ffmpeg_path, \
-        validate_sequence, is_safe_path, strip_path, try_download_video, ENCODE_ARGS
+        validate_sequence, is_safe_path, strip_path, try_download_video, ENCODE_ARGS, \
+        missing_audio_seconds, silent_preview_args
 from comfy.k_diffusion.utils import FolderOfImages
 
 
@@ -147,15 +149,23 @@ async def view_audio(request):
     start_time = 0
     if 'start_time' in query:
         start_time = float(query['start_time'])
-    args = [ffmpeg_path, "-v", "error", '-vn'] + in_args + ['-ss', str(start_time)]
-    if float(query.get('duration', 0)) > 0:
-        args += ['-t', str(query['duration'])]
-    if query.get('deadline', 'realtime') == 'good':
-        deadline = 'good'
+    requested = float(query.get('duration', 0) or 0)
+    # Uploads with no audio stream cannot be decoded to opus. Serve silence
+    # of the same length so the audio endpoint still returns playable audio.
+    silence_for = missing_audio_seconds(file, start_time, requested)
+    if silence_for is not None:
+        logger.info(f"No audio stream in {file}; serving {silence_for:.3f}s of silence")
+        args = silent_preview_args(silence_for)
     else:
-        deadline = 'realtime'
+        args = [ffmpeg_path, "-v", "error", '-vn'] + in_args + ['-ss', str(start_time)]
+        if requested > 0:
+            args += ['-t', str(query['duration'])]
+        if query.get('deadline', 'realtime') == 'good':
+            deadline = 'good'
+        else:
+            deadline = 'realtime'
 
-    args += ['-c:a', 'libopus','-deadline', deadline, '-cpu-used', '8', '-f', 'webm', '-']
+        args += ['-c:a', 'libopus','-deadline', deadline, '-cpu-used', '8', '-f', 'webm', '-']
     try:
         proc = await asyncio.create_subprocess_exec(*args, stdout=subprocess.PIPE,
                                                     stdin=subprocess.DEVNULL)

@@ -116,7 +116,7 @@ descriptions = {
      'Outputs': {
          'IMAGE': 'The loaded images',
          'frame_count': 'The length of images just returned',
-         'audio': 'The audio from the loaded video',
+         'audio': 'The audio from the loaded video. If the file has no audio stream, silence of the same length is returned so this output can still be used',
          'video_info': 'Exposes additional info about the video such as the source frame rate, or the total length',
          'LATENT': 'The loaded images pre-converted to latents. Only available when a vae is connected',
          },
@@ -145,7 +145,7 @@ descriptions = {
      'Outputs': {
          'IMAGE': 'The loaded images',
          'mask': 'Transparency data from the loaded video',
-         'audio': 'The audio from the loaded video',
+         'audio': 'The audio from the loaded video. If the file has no audio stream, silence of the same length is returned so this output can still be used',
          'video_info': 'Exposes additional info about the video such as the source frame rate, or the total length',
          'LATENT': 'The loaded images pre-converted to latents. Only available when a vae is connected',
          },
@@ -172,7 +172,7 @@ descriptions = {
      'Outputs': {
          'IMAGE': 'The loaded images',
          'frame_count': 'The length of images just returned',
-         'audio': 'The audio from the loaded video',
+         'audio': 'The audio from the loaded video. If the file has no audio stream, silence of the same length is returned so this output can still be used',
          'video_info': 'Exposes additional info about the video such as the source frame rate, or the total length',
          'LATENT': 'The loaded images pre-converted to latents. Only available when a vae is connected',
          },
@@ -200,7 +200,7 @@ descriptions = {
      'Outputs': {
          'IMAGE': 'The loaded images',
          'mask': 'Transparency data from the loaded video',
-         'audio': 'The audio from the loaded video',
+         'audio': 'The audio from the loaded video. If the file has no audio stream, silence of the same length is returned so this output can still be used',
          'video_info': 'Exposes additional info about the video such as the source frame rate, or the total length',
          'LATENT': 'The loaded images pre-converted to latents. Only available when a vae is connected',
          },
