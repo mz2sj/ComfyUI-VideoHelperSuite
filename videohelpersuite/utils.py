@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from typing import Iterable
 import shutil
@@ -221,6 +222,142 @@ def requeue_workflow(requeue_required=(-1,True)):
     if requeue_guard[1] == requeue_guard[2] and max(requeue_guard[3].values()):
         requeue_workflow_unchecked()
 
+# Used when a video has no audio stream. Matches the fallback in get_audio.
+_SILENT_SAMPLE_RATE = 44100
+_SILENT_CHANNELS = 2
+_STREAM_KIND_RE = re.compile(
+    r"Stream\s+#\d+:\d+(?:\[[^\]]+\])?(?:\([^)]*\))?:\s*([A-Za-z0-9_]+)\s*:"
+)
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+def _ffprobe_path():
+    if ffmpeg_path:
+        probe_dir = os.path.dirname(os.path.abspath(ffmpeg_path))
+        for name in ("ffprobe", "ffprobe.exe"):
+            candidate = os.path.join(probe_dir, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return shutil.which("ffprobe")
+
+def _stream_kinds(stderr):
+    if not stderr:
+        return []
+    return _STREAM_KIND_RE.findall(stderr)
+
+def _container_duration_seconds(stderr):
+    if not stderr:
+        return None
+    match = _DURATION_RE.search(stderr)
+    if not match:
+        return None
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+    seconds = float(match.group(3))
+    total = hours * 3600 + minutes * 60 + seconds
+    if total <= 0:
+        return None
+    return total
+
+def _probe_media_audio(file):
+    """Return (has_audio, duration_seconds).
+
+    has_audio is None when the file could not be probed. duration_seconds is
+    None when the container does not report a positive duration.
+    """
+    probe = _ffprobe_path()
+    if not probe:
+        return None, None
+    try:
+        res = subprocess.run(
+            [probe, "-v", "error", "-show_entries",
+             "stream=codec_type:format=duration", "-of", "json", file],
+            capture_output=True, check=False)
+    except OSError:
+        return None, None
+    if res.returncode != 0:
+        return None, None
+    try:
+        data = json.loads(res.stdout.decode(*ENCODE_ARGS) or "{}")
+    except (json.JSONDecodeError, UnicodeError):
+        return None, None
+    streams = data.get("streams") or []
+    duration = None
+    raw_duration = (data.get("format") or {}).get("duration")
+    try:
+        if raw_duration not in (None, "N/A"):
+            duration = float(raw_duration)
+    except (TypeError, ValueError):
+        duration = None
+    if duration is not None and duration <= 0:
+        duration = None
+    # An empty stream list is not proof that the file is silent; leave the
+    # caller on the original error path unless a real non-audio stream exists.
+    if not streams:
+        return None, duration
+    has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
+    return has_audio, duration
+
+def _resolve_silence_seconds(container_duration, start_time, duration):
+    """Length of silence that ffmpeg would have produced for a real track.
+
+    Returns None when neither the container nor the caller provides a duration.
+    """
+    start_time = float(start_time or 0)
+    duration = float(duration or 0)
+    if start_time < 0:
+        start_time = 0
+    if duration < 0:
+        duration = 0
+    if container_duration is None:
+        if duration <= 0:
+            return None
+        return duration
+    remaining = float(container_duration) - start_time
+    if remaining < 0:
+        remaining = 0.0
+    if duration > 0:
+        return remaining if remaining < duration else duration
+    return remaining
+
+def missing_audio_seconds(file, start_time=0, duration=0, stderr=""):
+    """Seconds of silence to substitute when ``file`` has no audio stream.
+
+    Returns None when the file has an audio stream, or when it could not be
+    shown to be a readable media file with no audio. Callers should keep the
+    original ffmpeg error in that case.
+    """
+    has_audio, container_duration = _probe_media_audio(file)
+    if has_audio is None:
+        kinds = _stream_kinds(stderr)
+        if "Audio" in kinds or not kinds:
+            return None
+        if container_duration is None:
+            container_duration = _container_duration_seconds(stderr)
+    elif has_audio:
+        return None
+    elif container_duration is None:
+        container_duration = _container_duration_seconds(stderr)
+    seconds = _resolve_silence_seconds(container_duration, start_time, duration)
+    if seconds is None or seconds <= 0:
+        return None
+    if int(round(seconds * _SILENT_SAMPLE_RATE)) <= 0:
+        return None
+    return seconds
+
+def _silent_audio(seconds, sample_rate=_SILENT_SAMPLE_RATE, channels=_SILENT_CHANNELS):
+    samples = int(round(float(seconds) * sample_rate))
+    if samples < 0:
+        samples = 0
+    waveform = torch.zeros((1, channels, samples), dtype=torch.float32)
+    return {'waveform': waveform, 'sample_rate': sample_rate}
+
+def silent_preview_args(seconds):
+    """ffmpeg argv that encodes ``seconds`` of stereo silence as webm/opus."""
+    return [ffmpeg_path, "-v", "error", "-f", "lavfi",
+            "-i", "anullsrc=channel_layout=stereo:sample_rate=%d" % _SILENT_SAMPLE_RATE,
+            "-t", f"{float(seconds):.6f}",
+            "-c:a", "libopus", "-f", "webm", "-"]
+
 def get_audio(file, start_time=0, duration=0):
     args = [ffmpeg_path, "-i", file]
     if start_time > 0:
@@ -234,8 +371,15 @@ def get_audio(file, start_time=0, duration=0):
         audio = torch.frombuffer(bytearray(res.stdout), dtype=torch.float32)
         match = re.search(', (\\d+) Hz, (\\w+), ',res.stderr.decode(*ENCODE_ARGS))
     except subprocess.CalledProcessError as e:
-        raise Exception(f"VHS failed to extract audio from {file}:\n" \
-                + e.stderr.decode(*ENCODE_ARGS))
+        stderr = e.stderr.decode(*ENCODE_ARGS) if e.stderr else ""
+        # A video-only upload has nothing for f32le to map, so ffmpeg exits
+        # with "Output file does not contain any stream". Substitute silence
+        # so Load Video (Upload)'s audio output can still be consumed.
+        silence_for = missing_audio_seconds(file, start_time, duration, stderr)
+        if silence_for is None:
+            raise Exception(f"VHS failed to extract audio from {file}:\n" + stderr)
+        logger.info(f"No audio stream in {file}; returning {silence_for:.3f}s of silence")
+        return _silent_audio(silence_for)
     if match:
         ar = int(match.group(1))
         #NOTE: Just throwing an error for other channel types right now
