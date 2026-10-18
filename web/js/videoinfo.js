@@ -70,24 +70,18 @@ function getVideoMetadata(file) {
     });
 }
 function isVideoFile(file) {
-    if (file?.name?.endsWith(".webm")) {
-        return true;
-    }
-    if (file?.name?.endsWith(".mp4")) {
-        return true;
-    }
-    if (file?.name?.endsWith(".mkv")) {
-        return true;
-    }
-
-    return false;
+    const name = file?.name?.toLowerCase() || "";
+    return name.endsWith(".webm")
+        || name.endsWith(".mp4")
+        || name.endsWith(".mkv")
+        || name.endsWith(".mov");
 }
 
 let originalHandleFile = app.handleFile;
 app.handleFile = handleFile;
 let fileInput = document.getElementById("comfy-file-input")
-//hijack comfy-file-input to allow webm/mp4/mkv
-fileInput.accept += ",video/webm,video/mp4,video/x-matroska";
+//hijack comfy-file-input to allow webm/mp4/mkv/mov
+fileInput.accept += ",video/webm,video/mp4,video/x-matroska,video/quicktime,.mov,.MOV";
 
 async function handleFile(file) {
     if (file?.type?.startsWith("video/") || isVideoFile(file)) {
